@@ -1,0 +1,22 @@
+{
+  "name": "Apin Downloader",
+  "short_name": "Apin DL",
+  "description": "Download TikTok, Instagram, YouTube, Pinterest dengan mudah",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0d1a",
+  "theme_color": "#7c3aed",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "share_target": {
+    "action": "/",
+    "method": "GET",
+    "params": {
+      "text": "shared_url",
+      "url": "shared_url",
+      "title": "shared_title"
+    }
+  }
+}
