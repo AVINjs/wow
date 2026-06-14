@@ -626,6 +626,108 @@ function autoDetectPlatform(url) {
   else if (url.includes('pinterest.com') || url.includes('pin.it')) switchTab('pinterest');
 }
 
+// ─── PUBLIC API (cobalt.tools — no key needed) ───────────────────────────
+const COBALT_API = 'https://api.cobalt.tools/';
+
+async function fetchCobalt(url, mode = 'auto', audioFormat = 'mp3') {
+  const res = await fetch(COBALT_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ url, downloadMode: mode, audioFormat, videoQuality: '1080' })
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  return res.json();
+}
+
+// YouTube MP3 — coba beberapa API dengan fallback
+async function fetchYouTubeMP3(url) {
+  let title = 'YouTube Audio', author = '', cover = '';
+
+  // Ambil info judul dulu
+  try {
+    const info = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(url)}`).then(r => r.json());
+    title = info.title || title;
+    author = info.author_name || '';
+    cover = info.thumbnail_url || '';
+  } catch (_) {}
+
+  // API 1: cobalt.tools (paling reliable)
+  try {
+    const data = await fetchCobalt(url, 'audio', 'mp3');
+    if ((data.status === 'redirect' || data.status === 'tunnel') && data.url) {
+      return { title, author, cover, formats: [{ type: 'mp3', label: 'Audio MP3', url: data.url, ext: 'mp3' }] };
+    }
+  } catch (_) {}
+
+  // API 2: yt-download.org
+  try {
+    const dlUrl = `https://yt-download.org/api/button/mp3?url=${encodeURIComponent(url)}`;
+    return { title, author, cover, formats: [{ type: 'mp3', label: 'Audio MP3', url: dlUrl, ext: 'mp3', isRedirect: true }] };
+  } catch (_) {}
+
+  // API 3: loader.to (redirect)
+  const loaderUrl = `https://loader.to/api/button/?url=${encodeURIComponent(url)}&f=mp3`;
+  return { title, author, cover, formats: [{ type: 'mp3', label: 'Audio MP3 (via loader.to)', url: loaderUrl, ext: 'mp3', isRedirect: true }] };
+}
+
+// TikTok — tikwm.com (CORS-enabled, langsung dari browser)
+async function fetchTikTok(url) {
+  const res = await fetch('https://api.tikwm.com/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ url, count: 12, cursor: 0, web: 1, hd: 1 })
+  });
+  const json = await res.json();
+  if (json.code !== 0) throw new Error(json.msg || 'Video tidak ditemukan');
+  const d = json.data;
+  const formats = [];
+  if (d.play)    formats.push({ type: 'nowm',   label: 'No Watermark (MP4)', url: d.play,    ext: 'mp4' });
+  if (d.hdplay)  formats.push({ type: 'hd',     label: 'HD No Watermark',    url: d.hdplay,  ext: 'mp4' });
+  if (d.music)   formats.push({ type: 'mp3',    label: 'Audio MP3',           url: d.music,   ext: 'mp3' });
+  if (d.images?.length) formats.push({ type: 'slides', label: `Slide Foto (${d.images.length} foto)`, url: d.images, ext: 'jpg', isSlide: true });
+  return { title: d.title || 'TikTok Video', author: d.author?.nickname || '', cover: d.cover || '', formats };
+}
+
+// Instagram / YouTube / Pinterest — cobalt.tools
+async function fetchCobaltMedia(url, platform) {
+  const formats = [];
+  let title = platform + ' Media', author = '', cover = '';
+
+  // Coba auto (video)
+  const auto = await fetchCobalt(url, 'auto');
+  if (auto.status === 'redirect' || auto.status === 'tunnel') {
+    formats.push({ type: 'nowm', label: platform === 'youtube' ? 'Video MP4' : 'Video (No WM)', url: auto.url, ext: 'mp4' });
+  } else if (auto.status === 'picker') {
+    // Multiple files (IG carousel / TT slides)
+    const urls = auto.picker.map(p => p.url);
+    formats.push({ type: 'slides', label: `Foto/Slide (${urls.length} item)`, url: urls, ext: 'jpg', isSlide: true });
+  }
+
+  // Coba audio MP3
+  if (platform !== 'pinterest') {
+    try {
+      const audio = await fetchCobalt(url, 'audio', 'mp3');
+      if (audio.status === 'redirect' || audio.status === 'tunnel') {
+        formats.push({ type: 'mp3', label: 'Audio MP3', url: audio.url, ext: 'mp3' });
+      }
+    } catch (_) {}
+  }
+
+  if (formats.length === 0) throw new Error('Format tidak tersedia. Pastikan link valid dan konten bisa diakses publik.');
+
+  // Ambil info judul via noembed (YouTube)
+  if (platform === 'youtube') {
+    try {
+      const info = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(url)}`).then(r => r.json());
+      title = info.title || title;
+      author = info.author_name || '';
+      cover = info.thumbnail_url || '';
+    } catch (_) {}
+  }
+
+  return { title, author, cover, formats };
+}
+
 // ─── MAIN ACTION ─────────────────────────────────────────────────────────
 async function handleMain() {
   const url = document.getElementById('urlInput').value.trim();
@@ -637,24 +739,19 @@ async function handleMain() {
   hideResult();
 
   try {
-    const res = await fetch(`/api/${currentPlatform}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
-    const data = await res.json();
-
-    if (!data.success) {
-      showError(data.error || 'Gagal mengambil data');
-      setLoading(false);
-      return;
+    let data;
+    if (currentPlatform === 'tiktok') {
+      data = await fetchTikTok(url);
+    } else if (currentPlatform === 'youtube') {
+      data = await fetchYouTubeMP3(url);
+    } else {
+      data = await fetchCobaltMedia(url, currentPlatform);
     }
-
-    currentVideoData = data.data;
+    currentVideoData = data;
     selectedFormat = null;
-    showResult(data.data);
+    showResult(data);
   } catch (err) {
-    showError('Koneksi gagal. Coba lagi.');
+    showError(err.message || 'Gagal mengambil data. Cek link dan coba lagi.');
   }
   setLoading(false);
 }
@@ -757,16 +854,22 @@ async function startDownload() {
 }
 
 async function downloadFile(url, filename) {
-  const response = await fetch(url, { mode: 'cors' });
-  const blob = await response.blob();
-  const blobUrl = URL.createObjectURL(blob);
+  // Coba fetch blob (jika server izinkan CORS)
+  try {
+    const response = await fetch(url, { mode: 'cors' });
+    if (!response.ok) throw new Error('cors failed');
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+    return;
+  } catch (_) {}
+  // Fallback: <a> tag langsung ke URL
   const a = document.createElement('a');
-  a.href = blobUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(blobUrl);
+  a.href = url; a.download = filename; a.target = '_blank'; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
 
 // ─── UI HELPERS ──────────────────────────────────────────────────────────
